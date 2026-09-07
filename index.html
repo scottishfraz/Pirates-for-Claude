@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Broadside — a pirate sailing prototype</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <div id="hud">
+    <div id="hullPanel" class="panel">
+      <div class="label">Hull Integrity</div>
+      <div id="healthTrack"><div id="healthFill"></div></div>
+      <div class="row">
+        <span class="label">Speed</span>
+        <span id="speedValue">0 kn</span>
+      </div>
+      <div class="reload-row">
+        <div>
+          <div class="key-hint">Q — Port</div>
+          <div class="reload-track"><div class="reload-fill" id="reloadLeft"></div></div>
+        </div>
+        <div>
+          <div class="key-hint">E — Starboard</div>
+          <div class="reload-track"><div class="reload-fill" id="reloadRight"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="compassPanel" class="panel">
+      <div class="label">Compass</div>
+      <div class="compass-ring">
+        <div class="compass-arrow" id="windArrow"></div>
+        <div class="compass-arrow" id="headingArrow"></div>
+      </div>
+      <div class="compass-legend">
+        <span class="wind">Wind</span>
+        <span class="heading">Heading</span>
+      </div>
+    </div>
+
+    <div id="scorePanel" class="panel">
+      <div class="label">Vessels Sunk</div>
+      <div id="scoreValue">0</div>
+    </div>
+
+    <div id="logPanel"><div id="messageLog"></div></div>
+  </div>
+
+  <div id="damageVignette"></div>
+
+  <div id="titleScreen" class="overlay">
+    <div class="scroll">
+      <h1>Broadside</h1>
+      <div class="subtitle">A pirate sailing &amp; combat prototype</div>
+      <p>Wind fills your sails. Set your course, close with the enemy, and let your cannons speak.</p>
+      <div class="controls">
+        <div><b>Arrows / WASD</b> — trim sails &amp; steer</div>
+        <div><b>Q</b> — fire port (left) cannons</div>
+        <div><b>E</b> — fire starboard (right) cannons</div>
+      </div>
+      <button class="action" id="startBtn">Set Sail</button>
+    </div>
+  </div>
+
+  <div id="gameOverScreen" class="overlay hidden">
+    <div class="scroll">
+      <h1 style="font-size:44px;">Sunk</h1>
+      <p>Your ship has gone to the bottom of the sea.</p>
+      <div class="label">Vessels Sunk</div>
+      <div id="finalScoreValue">0</div>
+      <button class="action" id="restartBtn">Sail Again</button>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>

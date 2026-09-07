@@ -1,0 +1,223 @@
+@import url('https://fonts.googleapis.com/css2?family=Pirata+One&family=Cinzel:wght@500;700&family=Crimson+Pro:wght@400;600&display=swap');
+
+:root {
+  --navy: #0d1b2a;
+  --navy-light: #16283d;
+  --brass: #c9974d;
+  --brass-bright: #e0b060;
+  --parchment: #ecdfc4;
+  --danger: #b6432f;
+  --fog-teal: #3a5a53;
+  --ink: #0b0906;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--navy);
+  color: var(--parchment);
+  font-family: 'Crimson Pro', serif;
+}
+
+#scene {
+  position: fixed;
+  inset: 0;
+  display: block;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- Instrument panels ---------- */
+.panel {
+  background: linear-gradient(160deg, var(--navy-light), var(--navy));
+  border: 1px solid var(--brass);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(201,151,77,0.25);
+  padding: 10px 14px;
+}
+
+.label {
+  font-family: 'Cinzel', serif;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brass-bright);
+}
+
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+#hullPanel {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  width: 220px;
+}
+#hullPanel .row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 6px; }
+#healthTrack {
+  margin-top: 6px;
+  height: 12px;
+  border: 1px solid var(--brass);
+  border-radius: 2px;
+  background: rgba(0,0,0,0.4);
+  overflow: hidden;
+}
+#healthFill { height: 100%; width: 100%; background: var(--brass-bright); transition: background 0.3s; }
+#speedValue { font-family: 'Cinzel', serif; font-size: 18px; color: var(--parchment); }
+
+.reload-row { display: flex; gap: 8px; margin-top: 10px; }
+.reload-track {
+  flex: 1;
+  height: 6px;
+  border: 1px solid rgba(201,151,77,0.6);
+  border-radius: 2px;
+  background: rgba(0,0,0,0.4);
+  overflow: hidden;
+}
+.reload-fill { height: 100%; width: 0%; background: var(--fog-teal); }
+.reload-fill#reloadLeft, .reload-fill#reloadRight { background: var(--brass); }
+.key-hint { font-family: 'Cinzel', serif; font-size: 10px; color: var(--brass-bright); }
+
+#compassPanel {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 128px;
+  text-align: center;
+}
+.compass-ring {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  margin: 8px auto 0;
+  border: 2px solid var(--brass);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.04), transparent 70%);
+}
+.compass-arrow {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 3px; height: 40px;
+  margin-left: -1.5px; margin-top: -40px;
+  transform-origin: bottom center;
+  border-radius: 2px;
+}
+#windArrow { background: linear-gradient(var(--fog-teal), transparent); }
+#headingArrow { background: linear-gradient(var(--brass-bright), transparent); height: 46px; margin-top: -46px; }
+.compass-legend { font-size: 9px; margin-top: 6px; display: flex; justify-content: space-between; }
+.compass-legend span.wind { color: var(--fog-teal); }
+.compass-legend span.heading { color: var(--brass-bright); }
+
+#scorePanel {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  padding: 8px 20px;
+}
+#scoreValue { font-family: 'Cinzel', serif; font-size: 20px; color: var(--brass-bright); }
+
+#logPanel {
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 420px;
+  max-width: 90vw;
+  text-align: center;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+.log-line {
+  font-family: 'Crimson Pro', serif;
+  font-size: 15px;
+  color: var(--parchment);
+  text-shadow: 0 2px 6px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9);
+  transition: opacity 0.3s;
+  margin-top: 2px;
+}
+
+#damageVignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 45%, var(--danger) 130%);
+}
+
+/* ---------- Overlays (title / game over) ---------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, rgba(13,27,42,0.55), rgba(6,12,18,0.92));
+}
+.scroll {
+  background: linear-gradient(180deg, #f2e6c8, #e6d3a3);
+  color: var(--ink);
+  border: 2px solid var(--brass);
+  border-radius: 6px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  padding: 40px 48px;
+  max-width: 480px;
+  text-align: center;
+}
+.scroll h1 {
+  font-family: 'Pirata One', serif;
+  font-size: 64px;
+  margin: 0 0 4px;
+  letter-spacing: 0.03em;
+  color: #3a2410;
+}
+.scroll .subtitle {
+  font-family: 'Cinzel', serif;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fog-teal);
+  margin-bottom: 22px;
+}
+.scroll p { line-height: 1.6; margin: 6px 0; }
+.scroll .controls {
+  margin: 20px 0;
+  padding: 14px 16px;
+  background: rgba(58,90,83,0.12);
+  border: 1px solid rgba(58,90,83,0.4);
+  border-radius: 4px;
+  font-family: 'Cinzel', serif;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-align: left;
+}
+.scroll .controls div { margin: 4px 0; }
+.scroll .controls b { color: #6a1f1a; }
+
+button.action {
+  font-family: 'Cinzel', serif;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: linear-gradient(160deg, var(--brass-bright), var(--brass));
+  color: #2a1a08;
+  border: 1px solid #7a5726;
+  border-radius: 4px;
+  padding: 12px 30px;
+  cursor: pointer;
+  margin-top: 10px;
+  transition: transform 0.15s;
+}
+button.action:hover { transform: translateY(-1px); }
+button.action:focus-visible { outline: 3px solid var(--fog-teal); outline-offset: 2px; }
+
+#finalScoreValue { font-family: 'Cinzel', serif; font-size: 28px; color: #6a1f1a; }
