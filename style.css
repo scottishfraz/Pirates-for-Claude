@@ -17,6 +17,8 @@ html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
   background: var(--navy);
   color: var(--parchment);
   font-family: 'Crimson Pro', serif;
@@ -145,6 +147,61 @@ html, body {
   transition: opacity 0.3s;
   margin-top: 2px;
 }
+
+#touchControls {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+#joystickBase {
+  position: absolute;
+  left: 26px;
+  bottom: 26px;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  border: 2px solid var(--brass);
+  background: radial-gradient(circle, rgba(255,255,255,0.05), rgba(0,0,0,0.35) 75%);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(201,151,77,0.25);
+  pointer-events: auto;
+  touch-action: none;
+}
+#joystickKnob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: 54px;
+  margin: -27px 0 0 -27px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, var(--brass-bright), var(--brass));
+  border: 1px solid #7a5726;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+}
+#fireButtons {
+  position: absolute;
+  right: 26px;
+  bottom: 26px;
+  display: flex;
+  gap: 14px;
+}
+.fire-btn {
+  pointer-events: auto;
+  touch-action: none;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  border: 2px solid var(--brass);
+  background: linear-gradient(160deg, var(--navy-light), var(--navy));
+  color: var(--brass-bright);
+  font-family: 'Cinzel', serif;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(201,151,77,0.25);
+  -webkit-tap-highlight-color: transparent;
+}
+.fire-btn:active { background: linear-gradient(160deg, var(--brass-bright), var(--brass)); color: #2a1a08; }
 
 #damageVignette {
   position: fixed;

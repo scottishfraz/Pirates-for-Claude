@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Broadside — a pirate sailing prototype</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -19,11 +19,11 @@
       </div>
       <div class="reload-row">
         <div>
-          <div class="key-hint">Q — Port</div>
+          <div class="key-hint" id="portKeyHint">Q — Port</div>
           <div class="reload-track"><div class="reload-fill" id="reloadLeft"></div></div>
         </div>
         <div>
-          <div class="key-hint">E — Starboard</div>
+          <div class="key-hint" id="starboardKeyHint">E — Starboard</div>
           <div class="reload-track"><div class="reload-fill" id="reloadRight"></div></div>
         </div>
       </div>
@@ -47,6 +47,16 @@
     </div>
 
     <div id="logPanel"><div id="messageLog"></div></div>
+
+    <div id="touchControls" class="hidden">
+      <div id="joystickBase">
+        <div id="joystickKnob"></div>
+      </div>
+      <div id="fireButtons">
+        <button type="button" id="portBtn" class="fire-btn">Port</button>
+        <button type="button" id="starboardBtn" class="fire-btn">Stbd</button>
+      </div>
+    </div>
   </div>
 
   <div id="damageVignette"></div>
@@ -56,7 +66,7 @@
       <h1>Broadside</h1>
       <div class="subtitle">A pirate sailing &amp; combat prototype</div>
       <p>Wind fills your sails. Set your course, close with the enemy, and let your cannons speak.</p>
-      <div class="controls">
+      <div class="controls" id="controlsHint">
         <div><b>Arrows / WASD</b> — trim sails &amp; steer</div>
         <div><b>Q</b> — fire port (left) cannons</div>
         <div><b>E</b> — fire starboard (right) cannons</div>

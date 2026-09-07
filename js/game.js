@@ -369,6 +369,66 @@ const damageVignette = el('damageVignette');
 let score = 0;
 let gameState = 'title';
 
+// ---------------------------------------------------------------------
+// Touch controls (virtual joystick + fire buttons)
+// ---------------------------------------------------------------------
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+const joystickBase = el('joystickBase');
+const joystickKnob = el('joystickKnob');
+const joystick = { active: false, dx: 0, dy: 0, pointerId: null };
+const JOY_RADIUS = 39;
+
+function updateJoystick(e) {
+  const rect = joystickBase.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  let dx = e.clientX - cx;
+  let dy = e.clientY - cy;
+  const dist = Math.hypot(dx, dy);
+  if (dist > JOY_RADIUS) { dx = (dx / dist) * JOY_RADIUS; dy = (dy / dist) * JOY_RADIUS; }
+  joystick.dx = dx / JOY_RADIUS;
+  joystick.dy = dy / JOY_RADIUS;
+  joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+}
+function resetJoystick() {
+  joystick.active = false;
+  joystick.pointerId = null;
+  joystick.dx = 0;
+  joystick.dy = 0;
+  joystickKnob.style.transform = 'translate(0, 0)';
+}
+joystickBase.addEventListener('pointerdown', (e) => {
+  joystick.active = true;
+  joystick.pointerId = e.pointerId;
+  joystickBase.setPointerCapture(e.pointerId);
+  updateJoystick(e);
+});
+joystickBase.addEventListener('pointermove', (e) => {
+  if (joystick.active && e.pointerId === joystick.pointerId) updateJoystick(e);
+});
+joystickBase.addEventListener('pointerup', (e) => {
+  if (e.pointerId === joystick.pointerId) resetJoystick();
+});
+joystickBase.addEventListener('pointercancel', resetJoystick);
+
+function bindFireButton(button, side) {
+  button.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    if (gameState === 'playing') fireCannon(player, side);
+  });
+}
+bindFireButton(el('portBtn'), 'left');
+bindFireButton(el('starboardBtn'), 'right');
+
+if (isTouch) {
+  el('touchControls').classList.remove('hidden');
+  el('portKeyHint').textContent = 'Tap — Port';
+  el('starboardKeyHint').textContent = 'Tap — Starboard';
+  el('controlsHint').innerHTML =
+    '<div><b>Left stick</b> — trim sails &amp; steer</div>' +
+    '<div><b>Port / Stbd</b> buttons — fire cannons</div>';
+}
+
 const messages = [];
 function log(text) {
   messages.push({ text, life: 4 });
@@ -534,10 +594,20 @@ function animate() {
   oceanMat.uniforms.uTime.value = t;
 
   if (gameState === 'playing') {
-    if (keys['ArrowUp'] || keys['KeyW']) player.userData.throttle = Math.min(1, player.userData.throttle + dt * 0.6);
-    if (keys['ArrowDown'] || keys['KeyS']) player.userData.throttle = Math.max(0, player.userData.throttle - dt * 0.6);
-    if (keys['ArrowLeft'] || keys['KeyA']) player.userData.heading -= dt * 0.9;
-    if (keys['ArrowRight'] || keys['KeyD']) player.userData.heading += dt * 0.9;
+    let turnInput = 0;
+    let throttleInput = 0;
+    if (keys['ArrowLeft'] || keys['KeyA']) turnInput -= 1;
+    if (keys['ArrowRight'] || keys['KeyD']) turnInput += 1;
+    if (keys['ArrowUp'] || keys['KeyW']) throttleInput += 1;
+    if (keys['ArrowDown'] || keys['KeyS']) throttleInput -= 1;
+    if (joystick.active) {
+      turnInput += joystick.dx;
+      throttleInput -= joystick.dy;
+    }
+    turnInput = THREE.MathUtils.clamp(turnInput, -1, 1);
+    throttleInput = THREE.MathUtils.clamp(throttleInput, -1, 1);
+    player.userData.heading += turnInput * dt * 0.9;
+    player.userData.throttle = THREE.MathUtils.clamp(player.userData.throttle + throttleInput * dt * 0.6, 0, 1);
 
     updateShipPhysics(player, dt);
     for (const en of enemies) {
