@@ -139,48 +139,108 @@ const sparkTex = radialTexture('rgba(255,214,140,0.95)', 'rgba(120,40,20,0)');
 // Ship construction
 // ---------------------------------------------------------------------
 function hullGeometry() {
+  // Shape is drawn in local (x, "length") space; after the +90 deg X
+  // rotation below, "length" becomes world z with the bow (the pointed
+  // end, drawn last toward +length) facing +z — the ship's forward axis
+  // used everywhere else (movement, bowsprit, masts, cannon mounts).
   const shape = new THREE.Shape();
-  shape.moveTo(0, 7.5);
-  shape.quadraticCurveTo(2.6, 6.4, 3.0, 2.5);
-  shape.lineTo(2.7, -5.5);
-  shape.quadraticCurveTo(2.5, -7, 0, -7.2);
-  shape.quadraticCurveTo(-2.5, -7, -2.7, -5.5);
-  shape.lineTo(-3.0, 2.5);
-  shape.quadraticCurveTo(-2.6, 6.4, 0, 7.5);
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: 2.6, bevelEnabled: true, bevelSize: 0.25, bevelThickness: 0.25, bevelSegments: 2 });
-  geo.rotateX(-Math.PI / 2);
-  geo.translate(0, -1.3, 0);
+  shape.moveTo(0, -7.6);
+  shape.quadraticCurveTo(2.6, -7.35, 2.75, -5.8);
+  shape.lineTo(2.9, 3.2);
+  shape.quadraticCurveTo(2.75, 6.4, 1.1, 7.7);
+  shape.quadraticCurveTo(0.4, 8.3, 0, 8.5);
+  shape.quadraticCurveTo(-0.4, 8.3, -1.1, 7.7);
+  shape.quadraticCurveTo(-2.75, 6.4, -2.9, 3.2);
+  shape.lineTo(-2.75, -5.8);
+  shape.quadraticCurveTo(-2.6, -7.35, 0, -7.6);
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: 2.8, bevelEnabled: true, bevelSize: 0.28, bevelThickness: 0.28, bevelSegments: 3 });
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 1.4, 0);
   return geo;
 }
 const sharedHullGeo = hullGeometry();
-const sharedDeckGeo = new THREE.BoxGeometry(4.6, 0.4, 12.5);
+const sharedDeckGeo = new THREE.BoxGeometry(4.4, 0.4, 15.2);
+const sharedCannonGeo = new THREE.CylinderGeometry(0.16, 0.19, 1.1, 8);
+
+function clothTexture() {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 96;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 96);
+  g.addColorStop(0, '#ffffff');
+  g.addColorStop(1, '#b9b9b9');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 96);
+  ctx.strokeStyle = 'rgba(0,0,0,0.16)';
+  ctx.lineWidth = 1.5;
+  for (let x = 8; x < 64; x += 11) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, 96);
+    ctx.stroke();
+  }
+  return new THREE.CanvasTexture(c);
+}
+const sailClothTex = clothTexture();
 
 function createShip(faction) {
   const palette = faction === 'player'
-    ? { hull: 0x5b3a24, deck: 0x8a6a45, sail: 0xece2c8, trim: 0x2f5a86, flag: 0x2f5a86 }
-    : { hull: 0x3a2a26, deck: 0x4d3a30, sail: 0xcbb9a3, trim: 0x6a1f1a, flag: 0x6a1f1a };
+    ? { hull: 0x5b3a24, hullLow: 0x3c2818, deck: 0x8a6a45, sail: 0xece2c8, trim: 0x2f5a86, flag: 0x2f5a86 }
+    : { hull: 0x3a2a26, hullLow: 0x241814, deck: 0x4d3a30, sail: 0xcbb9a3, trim: 0x6a1f1a, flag: 0x6a1f1a };
 
   const group = new THREE.Group();
 
   const hull = new THREE.Mesh(sharedHullGeo, new THREE.MeshStandardMaterial({ color: palette.hull, roughness: 0.85 }));
-  hull.scale.set(1.35, 1, 1.35);
+  hull.scale.set(1.3, 1, 1.3);
   group.add(hull);
 
+  const hullLow = new THREE.Mesh(sharedHullGeo, new THREE.MeshStandardMaterial({ color: palette.hullLow, roughness: 0.9 }));
+  hullLow.scale.set(1.22, 0.55, 1.22);
+  hullLow.position.y = -0.85;
+  group.add(hullLow);
+
   const deck = new THREE.Mesh(sharedDeckGeo, new THREE.MeshStandardMaterial({ color: palette.deck, roughness: 0.9 }));
-  deck.position.y = 0.9;
+  deck.position.y = 0.95;
   group.add(deck);
 
-  const trimGeo = new THREE.BoxGeometry(0.3, 1.0, 13.5);
-  [-2.15, 2.15].forEach((xSide) => {
+  const trimGeo = new THREE.BoxGeometry(0.3, 1.0, 15.5);
+  [-2.1, 2.1].forEach((xSide) => {
     const trim = new THREE.Mesh(trimGeo, new THREE.MeshStandardMaterial({ color: palette.trim, roughness: 0.7 }));
-    trim.position.set(xSide, 0.55, 0);
+    trim.position.set(xSide, 0.6, 0);
     group.add(trim);
+  });
+
+  // Raised aftcastle (stern) and forecastle (bow) decks give the
+  // silhouette a proper period-galleon step instead of a flat toy hull.
+  const aftcastle = new THREE.Mesh(
+    new THREE.BoxGeometry(3.6, 1.5, 4.2),
+    new THREE.MeshStandardMaterial({ color: palette.deck, roughness: 0.9 })
+  );
+  aftcastle.position.set(0, 1.85, -5.1);
+  group.add(aftcastle);
+
+  const forecastle = new THREE.Mesh(
+    new THREE.BoxGeometry(3.2, 0.9, 2.6),
+    new THREE.MeshStandardMaterial({ color: palette.deck, roughness: 0.9 })
+  );
+  forecastle.position.set(0, 1.55, 6.3);
+  group.add(forecastle);
+
+  // Gun-port cannon barrels along both sides, purely decorative.
+  const cannonMat = new THREE.MeshStandardMaterial({ color: 0x22201d, roughness: 0.6, metalness: 0.2 });
+  [-3.6, -0.6, 2.6].forEach((z) => {
+    [-1, 1].forEach((side) => {
+      const barrel = new THREE.Mesh(sharedCannonGeo, cannonMat);
+      barrel.rotation.z = Math.PI / 2;
+      barrel.position.set(side * 2.7, 0.35, z);
+      group.add(barrel);
+    });
   });
 
   function mast(z, height, sailWidth) {
     const m = new THREE.Group();
     const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.14, 0.2, height, 8),
+      new THREE.CylinderGeometry(0.14, 0.2, height, 10),
       new THREE.MeshStandardMaterial({ color: 0x4a3524, roughness: 0.9 })
     );
     pole.position.y = height / 2;
@@ -188,10 +248,9 @@ function createShip(faction) {
 
     const sail = new THREE.Mesh(
       new THREE.PlaneGeometry(sailWidth, height * 0.72, 6, 1),
-      new THREE.MeshStandardMaterial({ color: palette.sail, roughness: 0.6, side: THREE.DoubleSide })
+      new THREE.MeshStandardMaterial({ color: palette.sail, map: sailClothTex, roughness: 0.65, side: THREE.DoubleSide })
     );
     sail.position.set(0, height * 0.58, 0);
-    sail.userData.baseWidth = sailWidth;
     m.add(sail);
     m.userData.sail = sail;
 
@@ -203,27 +262,47 @@ function createShip(faction) {
     yard.position.set(0, height * 0.9, 0);
     m.add(yard);
 
+    const crowsNest = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.42, 0.34, 0.3, 8),
+      new THREE.MeshStandardMaterial({ color: 0x3a2a1c })
+    );
+    crowsNest.position.set(0, height * 0.97, 0);
+    m.add(crowsNest);
+
     m.position.z = z;
     return m;
   }
 
-  const mainMast = mast(-0.5, 9.5, 4.8);
-  const foreMast = mast(4.6, 7, 3.4);
+  const mainMast = mast(-1.0, 10, 4.8);
+  const foreMast = mast(4.4, 7.4, 3.4);
   group.add(mainMast, foreMast);
 
+  // Standing rigging: thin lines from the deck to each masthead and out
+  // to the bowsprit tip, breaking up the silhouette with real ship detail.
+  const rigMat = new THREE.LineBasicMaterial({ color: 0x241a10 });
+  function riggingLine(a, b) {
+    const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
+    group.add(new THREE.Line(geo, rigMat));
+  }
+  riggingLine(new THREE.Vector3(0, 1, -1.0), new THREE.Vector3(0, 9.7, 4.4));
+  riggingLine(new THREE.Vector3(0, 1, 4.4), new THREE.Vector3(0, 9.7, -1.0));
+  riggingLine(new THREE.Vector3(0, 1.3, 9.6), new THREE.Vector3(0, 7.2, 4.4));
+  riggingLine(new THREE.Vector3(-1.4, 0.9, -1.0), new THREE.Vector3(0, 9.7, -1.0));
+  riggingLine(new THREE.Vector3(1.4, 0.9, -1.0), new THREE.Vector3(0, 9.7, -1.0));
+
   const flag = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.4, 0.8, 4, 1),
+    new THREE.PlaneGeometry(1.4, 0.8, 5, 1),
     new THREE.MeshStandardMaterial({ color: palette.flag, side: THREE.DoubleSide })
   );
-  flag.position.set(0, 9.9, -0.5);
+  flag.position.set(0, 10.4, -1.0);
   group.add(flag);
 
   const bowsprit = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.1, 0.16, 4.2, 6),
+    new THREE.CylinderGeometry(0.1, 0.17, 4.4, 8),
     new THREE.MeshStandardMaterial({ color: 0x4a3524 })
   );
   bowsprit.rotation.x = Math.PI / 2.6;
-  bowsprit.position.set(0, 1.3, 8.6);
+  bowsprit.position.set(0, 1.5, 10);
   group.add(bowsprit);
 
   const leftCannon = new THREE.Object3D();
@@ -242,6 +321,8 @@ function createShip(faction) {
     leftCannon, rightCannon,
     reload: { left: 0, right: 0 },
     sails: [mainMast.userData.sail, foreMast.userData.sail],
+    flag,
+    flagPhase: Math.random() * Math.PI * 2,
     state: 'active',
     sinkTimer: 0,
     aiState: 'patrol',
@@ -492,6 +573,7 @@ function updateShipPhysics(ship, dt) {
     const trim = THREE.MathUtils.clamp(data.throttle * windMultiplier, 0.15, 1);
     sail.scale.x = trim;
   }
+  data.flag.rotation.y = Math.sin(clock.elapsedTime * 3 + data.flagPhase) * 0.18;
 
   data.reload.left = Math.max(0, data.reload.left - dt);
   data.reload.right = Math.max(0, data.reload.right - dt);
