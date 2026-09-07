@@ -26,6 +26,13 @@ function angleDiff(target, current) {
 function turnToward(current, target, maxDelta) {
   return current + clamp(angleDiff(target, current), -maxDelta, maxDelta);
 }
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = clamp((n >> 16) + amt, 0, 255);
+  const g = clamp(((n >> 8) & 255) + amt, 0, 255);
+  const b = clamp((n & 255) + amt, 0, 255);
+  return `rgb(${r},${g},${b})`;
+}
 
 // ---------------------------------------------------------------------
 // Canvas / camera
@@ -52,7 +59,26 @@ resize();
 // ---------------------------------------------------------------------
 const HULL_BOW = 8, HULL_STERN = 7.4, HULL_HALF_W = 3.6;
 const MAX_SPEED = 26, ACCEL = 1.2, TURN_RATE = 0.9;
-const RELOAD_TIME = 1.6, CANNON_SPEED = 62, CANNON_RANGE = 130, CANNON_DAMAGE = 18, HIT_RADIUS = 7.2;
+const RELOAD_TIME = 1.6, CANNON_SPEED = 62, CANNON_RANGE = 130, HIT_RADIUS = 7.2;
+
+// Historically, round shot holed the hull, chain shot shredded rigging to
+// slow/cripple a ship, and grape shot cut down the crew on deck — three
+// distinct tactical choices rather than one damage number.
+const AMMO = {
+  round: { label: 'Round Shot', hull: 20, sail: 0, crew: 2 },
+  chain: { label: 'Chain Shot', hull: 3, sail: 28, crew: 0 },
+  grape: { label: 'Grape Shot', hull: 3, sail: 0, crew: 22 },
+};
+
+const SHIP_NATIONS = ['Spanish', 'British', 'French', 'Dutch'];
+const SHIP_CLASSES = ['War Galleon', 'Frigate', 'Brigantine', 'Sloop'];
+const SHIP_NAMES = ['Santa Marta', 'Retribution', "Fortune's Favor", 'Zeearend', 'Perle Noire', 'San Cristobal', 'Windhound', 'Espadon'];
+function randomShipLabel() {
+  const nation = SHIP_NATIONS[Math.floor(Math.random() * SHIP_NATIONS.length)];
+  const cls = SHIP_CLASSES[Math.floor(Math.random() * SHIP_CLASSES.length)];
+  const name = SHIP_NAMES[Math.floor(Math.random() * SHIP_NAMES.length)];
+  return `${nation} ${cls} "${name}"`;
+}
 
 function createShip(faction) {
   return {
@@ -63,6 +89,12 @@ function createShip(faction) {
     throttle: faction === 'player' ? 0 : 0.55,
     health: 100,
     maxHealth: 100,
+    sailHealth: 100,
+    maxSailHealth: 100,
+    crew: 100,
+    maxCrew: 100,
+    crewRoutedLogged: false,
+    ammo: 'round',
     reload: { left: 0, right: 0 },
     state: 'active',
     sinkTimer: 0,
@@ -70,6 +102,7 @@ function createShip(faction) {
     aiTimer: Math.random() * 3,
     flagPhase: Math.random() * Math.PI * 2,
     wake: [],
+    label: faction === 'enemy' ? randomShipLabel() : null,
     palette: faction === 'player'
       ? { hull: '#5b3a24', hullLow: '#3c2818', deck: '#8a6a45', sail: '#ece2c8', sailShade: '#c9bf9f', trim: '#2f5a86', flag: '#2f5a86' }
       : { hull: '#3a2a26', hullLow: '#241814', deck: '#4d3a30', sail: '#cbb9a3', sailShade: '#a5947f', trim: '#6a1f1a', flag: '#6a1f1a' },
@@ -91,6 +124,11 @@ function spawnEnemy() {
 }
 for (let i = 0; i < MAX_ENEMIES; i++) spawnEnemy();
 
+function pickEnemyAmmo() {
+  const r = Math.random();
+  return r < 0.7 ? 'round' : r < 0.85 ? 'chain' : 'grape';
+}
+
 // ---------------------------------------------------------------------
 // Wind
 // ---------------------------------------------------------------------
@@ -102,9 +140,17 @@ const wind = { angle: Math.random() * Math.PI * 2 };
 const cannonballs = [];
 const particles = [];
 
-function fireCannon(ship, side) {
+function fireCannon(ship, side, ammoType) {
   if (ship.reload[side] > 0) return;
+  if (ship.crew <= 0) {
+    if (ship === player && !ship.crewRoutedLogged) {
+      log("Your deck is cleared — there's no one left to load a gun!");
+      ship.crewRoutedLogged = true;
+    }
+    return;
+  }
   ship.reload[side] = RELOAD_TIME;
+  const ammo = ammoType || ship.ammo || 'round';
 
   const fwd = forwardVec(ship.heading);
   const right = rightVec(ship.heading);
@@ -123,10 +169,11 @@ function fireCannon(ship, side) {
     vy: dirY * CANNON_SPEED + fwd.y * ship.speed * 0.5,
     life: CANNON_RANGE / CANNON_SPEED,
     owner: ship,
+    ammo,
   });
 
   spawnSpark(originX, originY);
-  if (ship === player) log('You fire the ' + side + ' broadside.');
+  if (ship === player) log(`You fire ${AMMO[ammo].label} from the ${side} broadside.`);
 }
 
 function spawnSplash(x, y) { particles.push({ x, y, life: 0.6, maxLife: 0.6, r: 1.5, growth: 9, kind: 'splash' }); }
@@ -142,6 +189,9 @@ addEventListener('keydown', (e) => {
   if (gameState === 'playing') {
     if (e.code === 'KeyQ') fireCannon(player, 'left');
     if (e.code === 'KeyE') fireCannon(player, 'right');
+    if (e.code === 'Digit1') setAmmo('round');
+    if (e.code === 'Digit2') setAmmo('chain');
+    if (e.code === 'Digit3') setAmmo('grape');
   }
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
@@ -151,6 +201,8 @@ addEventListener('keyup', (e) => { keys[e.code] = false; });
 // ---------------------------------------------------------------------
 const el = (id) => document.getElementById(id);
 const healthFill = el('healthFill');
+const sailFill = el('sailFill');
+const crewFill = el('crewFill');
 const speedValue = el('speedValue');
 const windArrow = el('windArrow');
 const headingArrow = el('headingArrow');
@@ -217,13 +269,23 @@ function bindFireButton(button, side) {
 bindFireButton(el('portBtn'), 'left');
 bindFireButton(el('starboardBtn'), 'right');
 
+const ammoButtons = { round: el('ammoRound'), chain: el('ammoChain'), grape: el('ammoGrape') };
+function setAmmo(type) {
+  player.ammo = type;
+  for (const key in ammoButtons) ammoButtons[key].classList.toggle('active', key === type);
+}
+for (const key in ammoButtons) {
+  ammoButtons[key].addEventListener('pointerdown', (e) => { e.preventDefault(); setAmmo(key); });
+}
+
 if (isTouch) {
   el('touchControls').classList.remove('hidden');
   el('portKeyHint').textContent = 'Tap — Port';
   el('starboardKeyHint').textContent = 'Tap — Starboard';
   el('controlsHint').innerHTML =
     '<div><b>Left stick</b> — trim sails &amp; steer</div>' +
-    '<div><b>Port / Stbd</b> buttons — fire cannons</div>';
+    '<div><b>Port / Stbd</b> buttons — fire cannons</div>' +
+    '<div><b>Round / Chain / Grape</b> — tap to choose shot</div>';
 }
 
 const messages = [];
@@ -245,11 +307,15 @@ function startGame() {
   gameState = 'playing';
   score = 0;
   player.health = player.maxHealth;
+  player.sailHealth = player.maxSailHealth;
+  player.crew = player.maxCrew;
+  player.crewRoutedLogged = false;
   player.throttle = 0;
   player.speed = 0;
   player.x = 0; player.y = 0;
   player.heading = 0;
   player.wake = [];
+  setAmmo('round');
   messages.length = 0;
   log('Anchors aweigh. Q/E fire cannons, arrows to sail.');
   enemies.length = 0;
@@ -270,7 +336,8 @@ function updateShipPhysics(ship, dt, elapsed) {
   const windVec = forwardVec(wind.angle);
   const alignment = fwd.x * windVec.x + fwd.y * windVec.y;
   const windMultiplier = lerp(0.4, 1.35, (alignment + 1) / 2);
-  const targetSpeed = ship.throttle * MAX_SPEED * windMultiplier;
+  const sailFactor = lerp(0.4, 1, ship.sailHealth / ship.maxSailHealth);
+  const targetSpeed = ship.throttle * MAX_SPEED * windMultiplier * sailFactor;
   ship.speed += (targetSpeed - ship.speed) * Math.min(1, dt * ACCEL);
 
   ship.x += fwd.x * ship.speed * dt;
@@ -312,7 +379,7 @@ function updateEnemyAI(ship, dt) {
 
     const right = rightVec(ship.heading);
     const side = (right.x * dx + right.y * dy) > 0 ? 'right' : 'left';
-    if (dist < 150 && ship.reload[side] <= 0 && Math.random() < 0.7) fireCannon(ship, side);
+    if (dist < 150 && ship.reload[side] <= 0 && Math.random() < 0.7) fireCannon(ship, side, pickEnemyAmmo());
   }
 }
 
@@ -335,10 +402,20 @@ function checkCannonballHits(ball) {
     if (target.state !== 'active') continue;
     const dx = ball.x - target.x, dy = ball.y - target.y;
     if (dx * dx + dy * dy < HIT_RADIUS * HIT_RADIUS) {
-      target.health -= CANNON_DAMAGE;
+      const dmg = AMMO[ball.ammo] || AMMO.round;
+      target.health -= dmg.hull;
+      target.sailHealth = Math.max(0, target.sailHealth - dmg.sail);
+      target.crew = Math.max(0, target.crew - dmg.crew);
       spawnSpark(ball.x, ball.y);
-      if (target === player) { damageFlash = 1; log('Your hull shudders under fire!'); }
-      else log('A direct hit on the enemy vessel!');
+      const you = target === player;
+      if (dmg.sail > dmg.hull && dmg.sail > dmg.crew) {
+        log(you ? 'Chain shot tears through your rigging!' : "Chain shot shreds the enemy's rigging!");
+      } else if (dmg.crew > dmg.hull && dmg.crew > dmg.sail) {
+        log(you ? 'Grapeshot rakes your deck!' : "Grapeshot sweeps the enemy's deck!");
+      } else {
+        log(you ? 'Your hull shudders under fire!' : 'A direct hit on the enemy vessel!');
+      }
+      if (you) damageFlash = 1;
       if (target.health <= 0 && target.state === 'active') {
         target.state = 'sinking';
         target.sinkTimer = 0;
@@ -393,6 +470,26 @@ function drawChartSea() {
   }
 }
 
+// Cheap deterministic sun-glint shimmer: a hash of each grid cell decides
+// whether it twinkles at all, so points don't jump around frame to frame.
+function drawSparkles(elapsed) {
+  const spacing = 27;
+  const reach = VIEW_RADIUS * 1.3;
+  const startX = Math.floor((player.x - reach) / spacing) * spacing;
+  const startY = Math.floor((player.y - reach) / spacing) * spacing;
+  for (let x = startX; x <= player.x + reach; x += spacing) {
+    for (let y = startY; y <= player.y + reach; y += spacing) {
+      const seed = Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1;
+      if (seed < 0.6) continue;
+      const twinkle = 0.5 + 0.5 * Math.sin(elapsed * 1.6 + seed * 30);
+      ctx.fillStyle = `rgba(255,255,255,${(0.08 + twinkle * 0.22).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(x, y, 1.1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
 function drawWake(ship) {
   for (const w of ship.wake) {
     const a = Math.max(0, w.life / 1.4) * 0.35;
@@ -434,6 +531,20 @@ function drawSail(x, yardLen, trim, palette) {
   ctx.beginPath();
   ctx.ellipse(0, 0.9, w / 2, 1.1, 0, 0, Math.PI * 2);
   ctx.fill();
+
+  // subtle top sheen / underside shadow for a billowed, sunlit look
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(0, 0.9, w / 2, 1.1, 0, 0, Math.PI * 2);
+  ctx.clip();
+  const sheen = ctx.createLinearGradient(0, -0.2, 0, 2);
+  sheen.addColorStop(0, 'rgba(255,255,255,0.28)');
+  sheen.addColorStop(0.5, 'rgba(255,255,255,0)');
+  sheen.addColorStop(1, 'rgba(0,0,0,0.16)');
+  ctx.fillStyle = sheen;
+  ctx.fillRect(-w / 2, -0.2, w, 2.2);
+  ctx.restore();
+
   ctx.strokeStyle = 'rgba(40,30,20,0.25)';
   ctx.lineWidth = 0.15;
   for (let i = -1; i <= 1; i++) {
@@ -450,16 +561,32 @@ function drawShip(ship, elapsed) {
   ctx.save();
   ctx.translate(ship.x, ship.y);
 
-  // Health pip stays screen-aligned regardless of the ship's own facing
-  // or the camera's rotation, so cancel the camera's -player.heading here.
+  // Nameplate/stat banner stays screen-aligned regardless of the ship's own
+  // facing or the camera's rotation, so cancel the camera's -player.heading.
   if (ship !== player && ship.state === 'active') {
     ctx.save();
     ctx.rotate(player.heading);
-    const pct = clamp(ship.health / ship.maxHealth, 0, 1);
-    ctx.fillStyle = 'rgba(13,27,42,0.7)';
-    ctx.fillRect(-5, -HULL_BOW - 4.5, 10, 2);
-    ctx.fillStyle = pct > 0.4 ? '#e0b060' : '#b6432f';
-    ctx.fillRect(-5, -HULL_BOW - 4.5, 10 * pct, 2);
+    ctx.font = '5px Cinzel, serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(236,223,196,0.95)';
+    ctx.shadowColor = 'rgba(0,0,0,0.85)';
+    ctx.shadowBlur = 1.5;
+    ctx.fillText(ship.label, 0, -HULL_BOW - 10);
+    ctx.shadowBlur = 0;
+
+    const barW = 17, barH = 1.5, gap = 0.5;
+    const stats = [
+      { v: ship.health / ship.maxHealth, color: '#e0b060' },
+      { v: ship.sailHealth / ship.maxSailHealth, color: '#3a5a53' },
+      { v: ship.crew / ship.maxCrew, color: '#ecdfc4' },
+    ];
+    stats.forEach((s, i) => {
+      const yy = -HULL_BOW - 7.5 + i * (barH + gap);
+      ctx.fillStyle = 'rgba(13,27,42,0.75)';
+      ctx.fillRect(-barW / 2, yy, barW, barH);
+      ctx.fillStyle = s.color;
+      ctx.fillRect(-barW / 2, yy, barW * clamp(s.v, 0, 1), barH);
+    });
     ctx.restore();
   }
 
@@ -468,18 +595,31 @@ function drawShip(ship, elapsed) {
   ctx.globalAlpha = scale;
   const p = ship.palette;
 
-  // hull (lower/darker waterline hull, then upper hull)
+  // hull: darker waterline hull underneath, then the upper hull with a
+  // left-lit/right-shadowed gradient and a soft drop shadow for volume
   ctx.save();
   ctx.scale(0.94, 0.94);
   ctx.fillStyle = p.hullLow;
   shipHullPath();
   ctx.fill();
   ctx.restore();
-  ctx.fillStyle = p.hull;
+
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur = 2.2;
+  ctx.shadowOffsetX = 1.1;
+  ctx.shadowOffsetY = 1.6;
+  const hullGrad = ctx.createLinearGradient(-HULL_HALF_W, 0, HULL_HALF_W, 0);
+  hullGrad.addColorStop(0, shade(p.hull, 26));
+  hullGrad.addColorStop(0.55, p.hull);
+  hullGrad.addColorStop(1, shade(p.hull, -24));
+  ctx.fillStyle = hullGrad;
   shipHullPath();
   ctx.fill();
+  ctx.restore();
   ctx.strokeStyle = p.trim;
   ctx.lineWidth = 0.6;
+  shipHullPath();
   ctx.stroke();
 
   // deck
@@ -536,10 +676,34 @@ function drawShip(ship, elapsed) {
 }
 
 function drawCannonball(ball) {
+  const angle = Math.atan2(ball.vy, ball.vx);
   ctx.fillStyle = '#1c1c1c';
-  ctx.beginPath();
-  ctx.arc(ball.x, ball.y, 0.6, 0, Math.PI * 2);
-  ctx.fill();
+  if (ball.ammo === 'chain') {
+    // two linked balls, historically fired to shred rigging and sails
+    ctx.save();
+    ctx.translate(ball.x, ball.y);
+    ctx.rotate(angle);
+    ctx.strokeStyle = '#1c1c1c';
+    ctx.lineWidth = 0.25;
+    ctx.beginPath();
+    ctx.moveTo(-0.7, 0);
+    ctx.lineTo(0.7, 0);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(-0.7, 0, 0.45, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0.7, 0, 0.45, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  } else if (ball.ammo === 'grape') {
+    // a scattering cluster of small shot
+    [[-0.5, -0.4], [0.5, -0.3], [0, 0.5], [-0.3, 0.3], [0.4, 0.4]].forEach(([ox, oy]) => {
+      ctx.beginPath();
+      ctx.arc(ball.x + ox, ball.y + oy, 0.28, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  } else {
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, 0.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 function drawParticle(p) {
@@ -618,6 +782,7 @@ function animate(now) {
     ctx.translate(-player.x, -player.y);
 
     drawChartSea();
+    drawSparkles(elapsed);
     drawWake(player);
     for (const en of enemies) drawWake(en);
     for (const en of enemies) drawShip(en, elapsed);
@@ -631,6 +796,8 @@ function animate(now) {
     const pct = Math.max(0, player.health / player.maxHealth) * 100;
     healthFill.style.width = pct + '%';
     healthFill.style.background = pct > 40 ? 'var(--brass-bright)' : 'var(--danger)';
+    sailFill.style.width = Math.max(0, (player.sailHealth / player.maxSailHealth) * 100) + '%';
+    crewFill.style.width = Math.max(0, (player.crew / player.maxCrew) * 100) + '%';
     speedValue.textContent = Math.round(player.speed * 1.9) + ' kn';
     scoreValue.textContent = score;
     windArrow.style.transform = `rotate(${((wind.angle - player.heading) * 180) / Math.PI}deg)`;

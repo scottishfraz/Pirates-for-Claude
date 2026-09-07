@@ -13,6 +13,10 @@
     <div id="hullPanel" class="panel">
       <div class="label">Hull Integrity</div>
       <div id="healthTrack"><div id="healthFill"></div></div>
+      <div class="label" style="margin-top:6px;">Sails</div>
+      <div class="mini-track"><div id="sailFill" class="mini-fill sail-fill"></div></div>
+      <div class="label" style="margin-top:6px;">Crew</div>
+      <div class="mini-track"><div id="crewFill" class="mini-fill crew-fill"></div></div>
       <div class="row">
         <span class="label">Speed</span>
         <span id="speedValue">0 kn</span>
@@ -26,6 +30,11 @@
           <div class="key-hint" id="starboardKeyHint">E — Starboard</div>
           <div class="reload-track"><div class="reload-fill" id="reloadRight"></div></div>
         </div>
+      </div>
+      <div class="ammo-row">
+        <button type="button" class="ammo-btn active" id="ammoRound">Round<span class="key-hint">1</span></button>
+        <button type="button" class="ammo-btn" id="ammoChain">Chain<span class="key-hint">2</span></button>
+        <button type="button" class="ammo-btn" id="ammoGrape">Grape<span class="key-hint">3</span></button>
       </div>
     </div>
 
@@ -68,8 +77,8 @@
       <p>Wind fills your sails. Set your course, close with the enemy, and let your cannons speak.</p>
       <div class="controls" id="controlsHint">
         <div><b>Arrows / WASD</b> — trim sails &amp; steer</div>
-        <div><b>Q</b> — fire port (left) cannons</div>
-        <div><b>E</b> — fire starboard (right) cannons</div>
+        <div><b>Q</b> / <b>E</b> — fire port / starboard cannons</div>
+        <div><b>1 2 3</b> — round / chain / grape shot</div>
       </div>
       <button class="action" id="startBtn">Set Sail</button>
     </div>

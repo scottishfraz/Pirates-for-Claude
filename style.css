@@ -60,7 +60,7 @@ html, body {
   position: absolute;
   top: 18px;
   left: 18px;
-  width: 220px;
+  width: 232px;
 }
 #hullPanel .row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 6px; }
 #healthTrack {
@@ -73,6 +73,41 @@ html, body {
 }
 #healthFill { height: 100%; width: 100%; background: var(--brass-bright); transition: background 0.3s; }
 #speedValue { font-family: 'Cinzel', serif; font-size: 18px; color: var(--parchment); }
+
+.mini-track {
+  margin-top: 4px;
+  height: 7px;
+  border: 1px solid var(--brass);
+  border-radius: 2px;
+  background: rgba(0,0,0,0.4);
+  overflow: hidden;
+}
+.mini-fill { height: 100%; width: 100%; }
+.sail-fill { background: var(--fog-teal); }
+.crew-fill { background: var(--parchment); }
+
+.ammo-row { display: flex; gap: 6px; margin-top: 10px; }
+.ammo-btn {
+  flex: 1;
+  pointer-events: auto;
+  cursor: pointer;
+  background: linear-gradient(160deg, var(--navy-light), var(--navy));
+  border: 1px solid var(--brass);
+  border-radius: 3px;
+  color: var(--parchment);
+  font-family: 'Cinzel', serif;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.ammo-btn .key-hint { font-size: 8px; color: var(--brass-bright); }
+.ammo-btn.active { background: linear-gradient(160deg, var(--brass-bright), var(--brass)); color: #2a1a08; }
+.ammo-btn.active .key-hint { color: #2a1a08; }
 
 .reload-row { display: flex; gap: 8px; margin-top: 10px; }
 .reload-track {
