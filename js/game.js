@@ -1,343 +1,82 @@
 // Broadside — a small open-sea sailing & cannon-combat prototype.
-// Built with Three.js. No external art assets: ships, waves and effects
-// are all generated from primitive geometry, shaders and canvas textures.
+// Rendered as a top-down 2D "nautical chart" on a canvas — no 3D engine,
+// no external art assets. The camera is centered on the player and
+// rotates so the player's own heading always points "up" on screen,
+// which is what makes ships to your left/right visible at a glance
+// (a fixed chase camera, by contrast, cannot show what's to your side).
+//
+// Coordinate convention (read this before touching headings/vectors):
+// world (x, y) matches the canvas — y increases DOWNWARD, same as
+// screen pixels. Heading is a compass bearing in radians, 0 = "up"
+// (north) on an unrotated view, increasing clockwise. That makes:
+//   forwardVec(h) = ( sin(h), -cos(h) )   // h=0 -> (0,-1), i.e. up
+//   rightVec(h)   = ( cos(h),  sin(h) )   // h=0 -> (1,0), i.e. right
+// Every position update, AI heading calc, and cannon-firing direction
+// in this file is built from those two functions, so the whole game
+// only has one place where the orientation convention could go wrong.
 
-// ---------------------------------------------------------------------
-// Wave function (shared shape between the GPU ocean shader and the CPU
-// ship-bobbing code, so boats visually sit "in" the water they float on)
-// ---------------------------------------------------------------------
-const WAVES = [
-  { dx: 0.857, dz: 0.514, amp: 0.9, k: 0.05, speed: 1.3 },
-  { dx: -0.574, dz: 0.819, amp: 0.5, k: 0.09, speed: 0.9 },
-  { dx: 0.316, dz: -0.949, amp: 0.3, k: 0.15, speed: 1.8 },
-];
-
-function waveHeight(x, z, t) {
-  let h = 0;
-  for (const w of WAVES) {
-    h += w.amp * Math.sin((x * w.dx + z * w.dz) * w.k + t * w.speed);
-  }
-  return h;
+function forwardVec(h) { return { x: Math.sin(h), y: -Math.cos(h) }; }
+function rightVec(h) { return { x: Math.cos(h), y: Math.sin(h) }; }
+function headingTo(dx, dy) { return Math.atan2(dx, -dy); }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function angleDiff(target, current) {
+  return ((target - current + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+}
+function turnToward(current, target, maxDelta) {
+  return current + clamp(angleDiff(target, current), -maxDelta, maxDelta);
 }
 
-const GLSL_WAVE_FUNC = `
-  float waveHeight(vec2 p, float t) {
-    float h = 0.0;
-    h += 0.9 * sin(dot(p, vec2(0.857, 0.514)) * 0.05 + t * 1.3);
-    h += 0.5 * sin(dot(p, vec2(-0.574, 0.819)) * 0.09 + t * 0.9);
-    h += 0.3 * sin(dot(p, vec2(0.316, -0.949)) * 0.15 + t * 1.8);
-    return h;
-  }
-`;
-
 // ---------------------------------------------------------------------
-// Scene / renderer / camera
+// Canvas / camera
 // ---------------------------------------------------------------------
 const canvas = document.getElementById('scene');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const ctx = canvas.getContext('2d');
+let dpr = 1;
+let viewScale = 1;
+const VIEW_RADIUS = 170; // world units guaranteed visible at the screen's narrower dimension
 
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 3000);
-
-function skyTexture() {
-  const c = document.createElement('canvas');
-  c.width = 2; c.height = 256;
-  const ctx = c.getContext('2d');
-  const g = ctx.createLinearGradient(0, 0, 0, 256);
-  g.addColorStop(0, '#6fa3c7');
-  g.addColorStop(0.45, '#bcd6dd');
-  g.addColorStop(0.6, '#e7dfc4');
-  g.addColorStop(1, '#3a5a53');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 2, 256);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(innerWidth * dpr);
+  canvas.height = Math.round(innerHeight * dpr);
+  canvas.style.width = innerWidth + 'px';
+  canvas.style.height = innerHeight + 'px';
+  viewScale = Math.min(innerWidth, innerHeight) / (VIEW_RADIUS * 2);
 }
-scene.background = skyTexture();
-scene.fog = new THREE.Fog(0xbcd6dd, 260, 1350);
-
-const hemi = new THREE.HemisphereLight(0xdfeef5, 0x2c4a3f, 0.9);
-scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff2d6, 1.15);
-sun.position.set(-220, 260, 140);
-scene.add(sun);
+addEventListener('resize', resize);
+resize();
 
 // ---------------------------------------------------------------------
-// Ocean
+// Ships
 // ---------------------------------------------------------------------
-const oceanGeo = new THREE.PlaneGeometry(4000, 4000, 120, 120);
-const oceanMat = new THREE.ShaderMaterial({
-  uniforms: {
-    uTime: { value: 0 },
-    uDeep: { value: new THREE.Color(0x0e3446) },
-    uShallow: { value: new THREE.Color(0x2f7a82) },
-    uFoam: { value: new THREE.Color(0xdff1ea) },
-    uSunDir: { value: new THREE.Vector3(-0.6, 0.7, 0.38).normalize() },
-  },
-  vertexShader: `
-    uniform float uTime;
-    varying float vHeight;
-    varying vec3 vNormalFake;
-    ${GLSL_WAVE_FUNC}
-    void main() {
-      vec2 p = position.xy;
-      float h = waveHeight(p, uTime);
-      float e = 2.0;
-      float hx = waveHeight(p + vec2(e, 0.0), uTime);
-      float hz = waveHeight(p + vec2(0.0, e), uTime);
-      vec3 tangentX = normalize(vec3(e, hx - h, 0.0));
-      vec3 tangentZ = normalize(vec3(0.0, hz - h, e));
-      vNormalFake = normalize(cross(tangentZ, tangentX));
-      vHeight = h;
-      vec3 pos = vec3(position.x, position.y, h);
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-    }
-  `,
-  fragmentShader: `
-    uniform vec3 uDeep;
-    uniform vec3 uShallow;
-    uniform vec3 uFoam;
-    uniform vec3 uSunDir;
-    varying float vHeight;
-    varying vec3 vNormalFake;
-    void main() {
-      float t = smoothstep(-0.4, 1.2, vHeight);
-      vec3 base = mix(uDeep, uShallow, t);
-      float diff = clamp(dot(vNormalFake, uSunDir), 0.0, 1.0);
-      base += diff * 0.25;
-      float foam = smoothstep(1.05, 1.55, vHeight);
-      base = mix(base, uFoam, foam * 0.6);
-      gl_FragColor = vec4(base, 1.0);
-    }
-  `,
-});
-const ocean = new THREE.Mesh(oceanGeo, oceanMat);
-ocean.rotation.x = -Math.PI / 2;
-scene.add(ocean);
-
-// ---------------------------------------------------------------------
-// Reusable canvas-generated textures (splash / spark / flag cloth)
-// ---------------------------------------------------------------------
-function radialTexture(inner, outer) {
-  const size = 64;
-  const c = document.createElement('canvas');
-  c.width = c.height = size;
-  const ctx = c.getContext('2d');
-  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  g.addColorStop(0, inner);
-  g.addColorStop(1, outer);
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, size, size);
-  return new THREE.CanvasTexture(c);
-}
-const splashTex = radialTexture('rgba(255,255,255,0.95)', 'rgba(255,255,255,0)');
-const sparkTex = radialTexture('rgba(255,214,140,0.95)', 'rgba(120,40,20,0)');
-
-// ---------------------------------------------------------------------
-// Ship construction
-// ---------------------------------------------------------------------
-function hullGeometry() {
-  // Shape is drawn in local (x, "length") space; after the +90 deg X
-  // rotation below, "length" becomes world z with the bow (the pointed
-  // end, drawn last toward +length) facing +z — the ship's forward axis
-  // used everywhere else (movement, bowsprit, masts, cannon mounts).
-  const shape = new THREE.Shape();
-  shape.moveTo(0, -7.6);
-  shape.quadraticCurveTo(2.6, -7.35, 2.75, -5.8);
-  shape.lineTo(2.9, 3.2);
-  shape.quadraticCurveTo(2.75, 6.4, 1.1, 7.7);
-  shape.quadraticCurveTo(0.4, 8.3, 0, 8.5);
-  shape.quadraticCurveTo(-0.4, 8.3, -1.1, 7.7);
-  shape.quadraticCurveTo(-2.75, 6.4, -2.9, 3.2);
-  shape.lineTo(-2.75, -5.8);
-  shape.quadraticCurveTo(-2.6, -7.35, 0, -7.6);
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: 2.8, bevelEnabled: true, bevelSize: 0.28, bevelThickness: 0.28, bevelSegments: 3 });
-  geo.rotateX(Math.PI / 2);
-  geo.translate(0, 1.4, 0);
-  return geo;
-}
-const sharedHullGeo = hullGeometry();
-const sharedDeckGeo = new THREE.BoxGeometry(4.4, 0.4, 15.2);
-const sharedCannonGeo = new THREE.CylinderGeometry(0.16, 0.19, 1.1, 8);
-
-function clothTexture() {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 96;
-  const ctx = c.getContext('2d');
-  const g = ctx.createLinearGradient(0, 0, 0, 96);
-  g.addColorStop(0, '#ffffff');
-  g.addColorStop(1, '#b9b9b9');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 96);
-  ctx.strokeStyle = 'rgba(0,0,0,0.16)';
-  ctx.lineWidth = 1.5;
-  for (let x = 8; x < 64; x += 11) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, 96);
-    ctx.stroke();
-  }
-  return new THREE.CanvasTexture(c);
-}
-const sailClothTex = clothTexture();
+const HULL_BOW = 8, HULL_STERN = 7.4, HULL_HALF_W = 3.6;
+const MAX_SPEED = 26, ACCEL = 1.2, TURN_RATE = 0.9;
+const RELOAD_TIME = 1.6, CANNON_SPEED = 62, CANNON_RANGE = 130, CANNON_DAMAGE = 18, HIT_RADIUS = 7.2;
 
 function createShip(faction) {
-  const palette = faction === 'player'
-    ? { hull: 0x5b3a24, hullLow: 0x3c2818, deck: 0x8a6a45, sail: 0xece2c8, trim: 0x2f5a86, flag: 0x2f5a86 }
-    : { hull: 0x3a2a26, hullLow: 0x241814, deck: 0x4d3a30, sail: 0xcbb9a3, trim: 0x6a1f1a, flag: 0x6a1f1a };
-
-  const group = new THREE.Group();
-
-  const hull = new THREE.Mesh(sharedHullGeo, new THREE.MeshStandardMaterial({ color: palette.hull, roughness: 0.85 }));
-  hull.scale.set(1.3, 1, 1.3);
-  group.add(hull);
-
-  const hullLow = new THREE.Mesh(sharedHullGeo, new THREE.MeshStandardMaterial({ color: palette.hullLow, roughness: 0.9 }));
-  hullLow.scale.set(1.22, 0.55, 1.22);
-  hullLow.position.y = -0.85;
-  group.add(hullLow);
-
-  const deck = new THREE.Mesh(sharedDeckGeo, new THREE.MeshStandardMaterial({ color: palette.deck, roughness: 0.9 }));
-  deck.position.y = 0.95;
-  group.add(deck);
-
-  const trimGeo = new THREE.BoxGeometry(0.3, 1.0, 15.5);
-  [-2.1, 2.1].forEach((xSide) => {
-    const trim = new THREE.Mesh(trimGeo, new THREE.MeshStandardMaterial({ color: palette.trim, roughness: 0.7 }));
-    trim.position.set(xSide, 0.6, 0);
-    group.add(trim);
-  });
-
-  // Raised aftcastle (stern) and forecastle (bow) decks give the
-  // silhouette a proper period-galleon step instead of a flat toy hull.
-  const aftcastle = new THREE.Mesh(
-    new THREE.BoxGeometry(3.6, 1.5, 4.2),
-    new THREE.MeshStandardMaterial({ color: palette.deck, roughness: 0.9 })
-  );
-  aftcastle.position.set(0, 1.85, -5.1);
-  group.add(aftcastle);
-
-  const forecastle = new THREE.Mesh(
-    new THREE.BoxGeometry(3.2, 0.9, 2.6),
-    new THREE.MeshStandardMaterial({ color: palette.deck, roughness: 0.9 })
-  );
-  forecastle.position.set(0, 1.55, 6.3);
-  group.add(forecastle);
-
-  // Gun-port cannon barrels along both sides, purely decorative.
-  const cannonMat = new THREE.MeshStandardMaterial({ color: 0x22201d, roughness: 0.6, metalness: 0.2 });
-  [-3.6, -0.6, 2.6].forEach((z) => {
-    [-1, 1].forEach((side) => {
-      const barrel = new THREE.Mesh(sharedCannonGeo, cannonMat);
-      barrel.rotation.z = Math.PI / 2;
-      barrel.position.set(side * 2.7, 0.35, z);
-      group.add(barrel);
-    });
-  });
-
-  function mast(z, height, sailWidth) {
-    const m = new THREE.Group();
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.14, 0.2, height, 10),
-      new THREE.MeshStandardMaterial({ color: 0x4a3524, roughness: 0.9 })
-    );
-    pole.position.y = height / 2;
-    m.add(pole);
-
-    const sail = new THREE.Mesh(
-      new THREE.PlaneGeometry(sailWidth, height * 0.72, 6, 1),
-      new THREE.MeshStandardMaterial({ color: palette.sail, map: sailClothTex, roughness: 0.65, side: THREE.DoubleSide })
-    );
-    sail.position.set(0, height * 0.58, 0);
-    m.add(sail);
-    m.userData.sail = sail;
-
-    const yard = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.06, 0.06, sailWidth * 1.05, 6),
-      new THREE.MeshStandardMaterial({ color: 0x3a2a1c })
-    );
-    yard.rotation.z = Math.PI / 2;
-    yard.position.set(0, height * 0.9, 0);
-    m.add(yard);
-
-    const crowsNest = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.42, 0.34, 0.3, 8),
-      new THREE.MeshStandardMaterial({ color: 0x3a2a1c })
-    );
-    crowsNest.position.set(0, height * 0.97, 0);
-    m.add(crowsNest);
-
-    m.position.z = z;
-    return m;
-  }
-
-  const mainMast = mast(-1.0, 10, 4.8);
-  const foreMast = mast(4.4, 7.4, 3.4);
-  group.add(mainMast, foreMast);
-
-  // Standing rigging: thin lines from the deck to each masthead and out
-  // to the bowsprit tip, breaking up the silhouette with real ship detail.
-  const rigMat = new THREE.LineBasicMaterial({ color: 0x241a10 });
-  function riggingLine(a, b) {
-    const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
-    group.add(new THREE.Line(geo, rigMat));
-  }
-  riggingLine(new THREE.Vector3(0, 1, -1.0), new THREE.Vector3(0, 9.7, 4.4));
-  riggingLine(new THREE.Vector3(0, 1, 4.4), new THREE.Vector3(0, 9.7, -1.0));
-  riggingLine(new THREE.Vector3(0, 1.3, 9.6), new THREE.Vector3(0, 7.2, 4.4));
-  riggingLine(new THREE.Vector3(-1.4, 0.9, -1.0), new THREE.Vector3(0, 9.7, -1.0));
-  riggingLine(new THREE.Vector3(1.4, 0.9, -1.0), new THREE.Vector3(0, 9.7, -1.0));
-
-  const flag = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.4, 0.8, 5, 1),
-    new THREE.MeshStandardMaterial({ color: palette.flag, side: THREE.DoubleSide })
-  );
-  flag.position.set(0, 10.4, -1.0);
-  group.add(flag);
-
-  const bowsprit = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.1, 0.17, 4.4, 8),
-    new THREE.MeshStandardMaterial({ color: 0x4a3524 })
-  );
-  bowsprit.rotation.x = Math.PI / 2.6;
-  bowsprit.position.set(0, 1.5, 10);
-  group.add(bowsprit);
-
-  const leftCannon = new THREE.Object3D();
-  leftCannon.position.set(-2.9, 0.9, 0);
-  const rightCannon = new THREE.Object3D();
-  rightCannon.position.set(2.9, 0.9, 0);
-  group.add(leftCannon, rightCannon);
-
-  group.userData = {
+  return {
     faction,
-    health: 100,
-    maxHealth: 100,
+    x: 0, y: 0,
+    heading: 0,
     speed: 0,
     throttle: faction === 'player' ? 0 : 0.55,
-    heading: 0,
-    leftCannon, rightCannon,
+    health: 100,
+    maxHealth: 100,
     reload: { left: 0, right: 0 },
-    sails: [mainMast.userData.sail, foreMast.userData.sail],
-    flag,
-    flagPhase: Math.random() * Math.PI * 2,
     state: 'active',
     sinkTimer: 0,
     aiState: 'patrol',
     aiTimer: Math.random() * 3,
+    flagPhase: Math.random() * Math.PI * 2,
+    wake: [],
+    palette: faction === 'player'
+      ? { hull: '#5b3a24', hullLow: '#3c2818', deck: '#8a6a45', sail: '#ece2c8', sailShade: '#c9bf9f', trim: '#2f5a86', flag: '#2f5a86' }
+      : { hull: '#3a2a26', hullLow: '#241814', deck: '#4d3a30', sail: '#cbb9a3', sailShade: '#a5947f', trim: '#6a1f1a', flag: '#6a1f1a' },
   };
-  return group;
 }
 
-// ---------------------------------------------------------------------
-// Player + enemies
-// ---------------------------------------------------------------------
 const player = createShip('player');
-player.position.set(0, 0, 0);
-scene.add(player);
-
 const enemies = [];
 const MAX_ENEMIES = 3;
 
@@ -345,13 +84,9 @@ function spawnEnemy() {
   const ship = createShip('enemy');
   const angle = Math.random() * Math.PI * 2;
   const dist = 160 + Math.random() * 90;
-  ship.position.set(
-    player.position.x + Math.cos(angle) * dist,
-    0,
-    player.position.z + Math.sin(angle) * dist
-  );
-  ship.userData.heading = Math.random() * Math.PI * 2;
-  scene.add(ship);
+  ship.x = player.x + Math.sin(angle) * dist;
+  ship.y = player.y - Math.cos(angle) * dist;
+  ship.heading = Math.random() * Math.PI * 2;
   enemies.push(ship);
 }
 for (let i = 0; i < MAX_ENEMIES; i++) spawnEnemy();
@@ -360,61 +95,42 @@ for (let i = 0; i < MAX_ENEMIES; i++) spawnEnemy();
 // Wind
 // ---------------------------------------------------------------------
 const wind = { angle: Math.random() * Math.PI * 2 };
-function windDir() {
-  return new THREE.Vector2(Math.sin(wind.angle), Math.cos(wind.angle));
-}
 
 // ---------------------------------------------------------------------
 // Cannonballs & particles
 // ---------------------------------------------------------------------
-const ballGeo = new THREE.SphereGeometry(0.35, 8, 8);
-const ballMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1c });
 const cannonballs = [];
 const particles = [];
 
 function fireCannon(ship, side) {
-  const data = ship.userData;
-  if (data.reload[side] > 0) return;
-  data.reload[side] = 1.6;
+  if (ship.reload[side] > 0) return;
+  ship.reload[side] = RELOAD_TIME;
 
-  const mount = side === 'left' ? data.leftCannon : data.rightCannon;
-  const worldPos = new THREE.Vector3();
-  mount.getWorldPosition(worldPos);
+  const fwd = forwardVec(ship.heading);
+  const right = rightVec(ship.heading);
+  const mountOffset = side === 'left' ? -HULL_HALF_W * 0.8 : HULL_HALF_W * 0.8;
+  const originX = ship.x + right.x * mountOffset;
+  const originY = ship.y + right.y * mountOffset;
 
-  const forward = new THREE.Vector3(Math.sin(data.heading), 0, Math.cos(data.heading));
-  const right = new THREE.Vector3(forward.z, 0, -forward.x);
-  const outward = side === 'left' ? right.clone().negate() : right.clone();
+  const spread = (Math.random() - 0.5) * 0.08;
+  const outSign = side === 'left' ? -1 : 1;
+  const dirX = right.x * outSign * Math.cos(spread) + fwd.x * Math.sin(spread) * outSign;
+  const dirY = right.y * outSign * Math.cos(spread) + fwd.y * Math.sin(spread) * outSign;
 
-  const ball = new THREE.Mesh(ballGeo, ballMat);
-  ball.position.copy(worldPos);
-  const speed = 46;
-  const velocity = outward.multiplyScalar(speed)
-    .addScaledVector(forward, data.speed * 0.6)
-    .add(new THREE.Vector3(0, 11, 0));
-  ball.userData = { velocity, owner: ship, life: 3.2 };
-  scene.add(ball);
-  cannonballs.push(ball);
+  cannonballs.push({
+    x: originX, y: originY,
+    vx: dirX * CANNON_SPEED + fwd.x * ship.speed * 0.5,
+    vy: dirY * CANNON_SPEED + fwd.y * ship.speed * 0.5,
+    life: CANNON_RANGE / CANNON_SPEED,
+    owner: ship,
+  });
 
-  spawnMuzzleSpark(worldPos);
+  spawnSpark(originX, originY);
   if (ship === player) log('You fire the ' + side + ' broadside.');
 }
 
-function spawnSplash(pos) {
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: splashTex, transparent: true, depthWrite: false }));
-  sprite.position.copy(pos);
-  sprite.scale.set(1, 1, 1);
-  sprite.userData = { life: 0.6, grow: 6 };
-  scene.add(sprite);
-  particles.push(sprite);
-}
-function spawnMuzzleSpark(pos) {
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: sparkTex, transparent: true, depthWrite: false }));
-  sprite.position.copy(pos);
-  sprite.scale.set(2, 2, 2);
-  sprite.userData = { life: 0.35, grow: 3 };
-  scene.add(sprite);
-  particles.push(sprite);
-}
+function spawnSplash(x, y) { particles.push({ x, y, life: 0.6, maxLife: 0.6, r: 1.5, growth: 9, kind: 'splash' }); }
+function spawnSpark(x, y) { particles.push({ x, y, life: 0.3, maxLife: 0.3, r: 1, growth: 7, kind: 'spark' }); }
 
 // ---------------------------------------------------------------------
 // Input
@@ -528,14 +244,14 @@ function startGame() {
   gameOverScreen.classList.add('hidden');
   gameState = 'playing';
   score = 0;
-  player.userData.health = player.userData.maxHealth;
-  player.userData.throttle = 0;
-  player.userData.speed = 0;
-  player.position.set(0, 0, 0);
-  player.userData.heading = 0;
+  player.health = player.maxHealth;
+  player.throttle = 0;
+  player.speed = 0;
+  player.x = 0; player.y = 0;
+  player.heading = 0;
+  player.wake = [];
   messages.length = 0;
   log('Anchors aweigh. Q/E fire cannons, arrows to sail.');
-  for (const en of enemies) scene.remove(en);
   enemies.length = 0;
   for (let i = 0; i < MAX_ENEMIES; i++) spawnEnemy();
 }
@@ -547,87 +263,65 @@ function gameOver() {
 }
 
 // ---------------------------------------------------------------------
-// Main loop
+// Physics & AI
 // ---------------------------------------------------------------------
-const clock = new THREE.Clock();
+function updateShipPhysics(ship, dt, elapsed) {
+  const fwd = forwardVec(ship.heading);
+  const windVec = forwardVec(wind.angle);
+  const alignment = fwd.x * windVec.x + fwd.y * windVec.y;
+  const windMultiplier = lerp(0.4, 1.35, (alignment + 1) / 2);
+  const targetSpeed = ship.throttle * MAX_SPEED * windMultiplier;
+  ship.speed += (targetSpeed - ship.speed) * Math.min(1, dt * ACCEL);
 
-function updateShipPhysics(ship, dt) {
-  const data = ship.userData;
-  const forward = new THREE.Vector2(Math.sin(data.heading), Math.cos(data.heading));
-  const alignment = forward.dot(windDir());
-  const windMultiplier = THREE.MathUtils.lerp(0.4, 1.35, (alignment + 1) / 2);
-  const maxSpeed = 26;
-  const targetSpeed = data.throttle * maxSpeed * windMultiplier;
-  data.speed += (targetSpeed - data.speed) * Math.min(1, dt * 1.2);
+  ship.x += fwd.x * ship.speed * dt;
+  ship.y += fwd.y * ship.speed * dt;
 
-  ship.position.x += forward.x * data.speed * dt;
-  ship.position.z += forward.y * data.speed * dt;
-  ship.rotation.y = data.heading;
-
-  const h = waveHeight(ship.position.x, ship.position.z, clock.elapsedTime);
-  ship.position.y = h * 0.5;
-  ship.rotation.z = Math.sin(clock.elapsedTime * 1.1 + ship.position.x * 0.05) * 0.035;
-  ship.rotation.x = Math.sin(clock.elapsedTime * 0.9 + ship.position.z * 0.05) * 0.02;
-
-  for (const sail of data.sails) {
-    const trim = THREE.MathUtils.clamp(data.throttle * windMultiplier, 0.15, 1);
-    sail.scale.x = trim;
+  if (ship.speed > 2) {
+    ship.wake.push({ x: ship.x - fwd.x * 6, y: ship.y - fwd.y * 6, life: 1.4 });
+    if (ship.wake.length > 40) ship.wake.shift();
   }
-  data.flag.rotation.y = Math.sin(clock.elapsedTime * 3 + data.flagPhase) * 0.18;
+  for (const w of ship.wake) w.life -= dt;
+  while (ship.wake.length && ship.wake[0].life <= 0) ship.wake.shift();
 
-  data.reload.left = Math.max(0, data.reload.left - dt);
-  data.reload.right = Math.max(0, data.reload.right - dt);
+  ship.sailTrim = clamp(ship.throttle * windMultiplier, 0.15, 1);
+  ship.reload.left = Math.max(0, ship.reload.left - dt);
+  ship.reload.right = Math.max(0, ship.reload.right - dt);
 }
 
 function updateEnemyAI(ship, dt) {
-  const data = ship.userData;
-  const toPlayer = new THREE.Vector2(player.position.x - ship.position.x, player.position.z - ship.position.z);
-  const dist = toPlayer.length();
-  data.aiTimer -= dt;
+  const dx = player.x - ship.x, dy = player.y - ship.y;
+  const dist = Math.hypot(dx, dy);
+  ship.aiTimer -= dt;
 
-  if (data.aiState === 'patrol') {
-    data.throttle = 0.35;
-    if (data.aiTimer <= 0) {
-      data.heading += (Math.random() - 0.5) * 1.2;
-      data.aiTimer = 2 + Math.random() * 3;
+  if (ship.aiState === 'patrol') {
+    ship.throttle = 0.35;
+    if (ship.aiTimer <= 0) {
+      ship.heading += (Math.random() - 0.5) * 1.2;
+      ship.aiTimer = 2 + Math.random() * 3;
     }
-    if (dist < 210) data.aiState = 'hunt';
-  } else if (data.aiState === 'hunt') {
-    data.throttle = 0.85;
-    const desired = Math.atan2(toPlayer.x, toPlayer.y);
-    data.heading = turnToward(data.heading, desired, dt * 1.1);
-    if (dist < 130) data.aiState = 'engage';
-    if (dist > 260) data.aiState = 'patrol';
-  } else if (data.aiState === 'engage') {
-    data.throttle = 0.55;
-    const desired = Math.atan2(toPlayer.x, toPlayer.y) + Math.PI / 2;
-    data.heading = turnToward(data.heading, desired, dt * 0.8);
-    if (dist > 200) data.aiState = 'hunt';
+    if (dist < 210) ship.aiState = 'hunt';
+  } else if (ship.aiState === 'hunt') {
+    ship.throttle = 0.85;
+    ship.heading = turnToward(ship.heading, headingTo(dx, dy), dt * 1.1);
+    if (dist < 130) ship.aiState = 'engage';
+    if (dist > 260) ship.aiState = 'patrol';
+  } else if (ship.aiState === 'engage') {
+    ship.throttle = 0.55;
+    ship.heading = turnToward(ship.heading, headingTo(dx, dy) + Math.PI / 2, dt * 0.8);
+    if (dist > 200) ship.aiState = 'hunt';
 
-    const forward = new THREE.Vector2(Math.sin(data.heading), Math.cos(data.heading));
-    const right = new THREE.Vector2(forward.y, -forward.x);
-    const side = right.dot(toPlayer) > 0 ? 'right' : 'left';
-    if (dist < 150 && data.reload[side] <= 0 && Math.random() < 0.7) {
-      fireCannon(ship, side);
-    }
+    const right = rightVec(ship.heading);
+    const side = (right.x * dx + right.y * dy) > 0 ? 'right' : 'left';
+    if (dist < 150 && ship.reload[side] <= 0 && Math.random() < 0.7) fireCannon(ship, side);
   }
 }
 
-function turnToward(current, target, maxDelta) {
-  let diff = ((target - current + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-  const clamped = THREE.MathUtils.clamp(diff, -maxDelta, maxDelta);
-  return current + clamped;
-}
-
 function sinkShip(ship, dt) {
-  const data = ship.userData;
-  data.sinkTimer += dt;
-  ship.position.y -= dt * 3;
-  ship.rotation.z += dt * 0.6;
-  ship.rotation.x += dt * 0.25;
-  ship.scale.multiplyScalar(1 - dt * 0.15);
-  if (data.sinkTimer > 3) {
-    scene.remove(ship);
+  ship.sinkTimer += dt;
+  ship.sinkScale = Math.max(0, 1 - ship.sinkTimer / 3);
+  for (const w of ship.wake) w.life -= dt;
+  while (ship.wake.length && ship.wake[0].life <= 0) ship.wake.shift();
+  if (ship.sinkTimer > 3) {
     const idx = enemies.indexOf(ship);
     if (idx >= 0) enemies.splice(idx, 1);
   }
@@ -635,29 +329,22 @@ function sinkShip(ship, dt) {
 
 let damageFlash = 0;
 
-function checkCannonballHits(ball, dt) {
-  const targets = ball.userData.owner === player ? enemies : [player];
+function checkCannonballHits(ball) {
+  const targets = ball.owner === player ? enemies : [player];
   for (const target of targets) {
-    if (target.userData.state !== 'active') continue;
-    const dx = ball.position.x - target.position.x;
-    const dz = ball.position.z - target.position.z;
-    const distSq = dx * dx + dz * dz;
-    if (distSq < 6.5 * 6.5 && ball.position.y < 4.5) {
-      target.userData.health -= 18;
-      spawnMuzzleSpark(ball.position.clone());
-      scene.remove(ball);
-      cannonballs.splice(cannonballs.indexOf(ball), 1);
-      if (target === player) {
-        damageFlash = 1;
-        log('Your hull shudders under fire!');
-      } else {
-        log('A direct hit on the enemy vessel!');
-      }
-      if (target.userData.health <= 0 && target.userData.state === 'active') {
-        target.userData.state = 'sinking';
-        if (target === player) {
-          gameOver();
-        } else {
+    if (target.state !== 'active') continue;
+    const dx = ball.x - target.x, dy = ball.y - target.y;
+    if (dx * dx + dy * dy < HIT_RADIUS * HIT_RADIUS) {
+      target.health -= CANNON_DAMAGE;
+      spawnSpark(ball.x, ball.y);
+      if (target === player) { damageFlash = 1; log('Your hull shudders under fire!'); }
+      else log('A direct hit on the enemy vessel!');
+      if (target.health <= 0 && target.state === 'active') {
+        target.state = 'sinking';
+        target.sinkTimer = 0;
+        target.sinkScale = 1;
+        if (target === player) gameOver();
+        else {
           score += 1;
           log('Enemy vessel sent to the depths.');
           setTimeout(() => { if (gameState === 'playing') spawnEnemy(); }, 2500);
@@ -669,100 +356,290 @@ function checkCannonballHits(ball, dt) {
   return false;
 }
 
-function animate() {
+// ---------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------
+function drawChartSea() {
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, VIEW_RADIUS * 2.4);
+  g.addColorStop(0, '#1f5560');
+  g.addColorStop(1, '#0d3038');
+  ctx.fillStyle = g;
+  ctx.fillRect(-innerWidth, -innerHeight, innerWidth * 2, innerHeight * 2);
+
+  const spacing = 40;
+  const reach = VIEW_RADIUS * 1.6;
+  const startX = Math.floor((player.x - reach) / spacing) * spacing;
+  const startY = Math.floor((player.y - reach) / spacing) * spacing;
+  ctx.strokeStyle = 'rgba(224, 176, 96, 0.14)';
+  ctx.lineWidth = 1 / viewScale;
+  ctx.beginPath();
+  for (let x = startX; x <= player.x + reach; x += spacing) {
+    ctx.moveTo(x, player.y - reach);
+    ctx.lineTo(x, player.y + reach);
+  }
+  for (let y = startY; y <= player.y + reach; y += spacing) {
+    ctx.moveTo(player.x - reach, y);
+    ctx.lineTo(player.x + reach, y);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(224, 176, 96, 0.22)';
+  for (let x = startX; x <= player.x + reach; x += spacing) {
+    for (let y = startY; y <= player.y + reach; y += spacing) {
+      ctx.beginPath();
+      ctx.arc(x, y, 0.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawWake(ship) {
+  for (const w of ship.wake) {
+    const a = Math.max(0, w.life / 1.4) * 0.35;
+    ctx.fillStyle = `rgba(223, 241, 234, ${a})`;
+    ctx.beginPath();
+    ctx.arc(w.x, w.y, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function shipHullPath() {
+  ctx.beginPath();
+  ctx.moveTo(0, -HULL_BOW);
+  ctx.quadraticCurveTo(HULL_HALF_W * 0.35, -HULL_BOW * 0.85, HULL_HALF_W, -HULL_BOW * 0.35);
+  ctx.lineTo(HULL_HALF_W, HULL_STERN * 0.55);
+  ctx.quadraticCurveTo(HULL_HALF_W * 0.9, HULL_STERN * 0.92, 0, HULL_STERN);
+  ctx.quadraticCurveTo(-HULL_HALF_W * 0.9, HULL_STERN * 0.92, -HULL_HALF_W, HULL_STERN * 0.55);
+  ctx.lineTo(-HULL_HALF_W, -HULL_BOW * 0.35);
+  ctx.quadraticCurveTo(-HULL_HALF_W * 0.35, -HULL_BOW * 0.85, 0, -HULL_BOW);
+  ctx.closePath();
+}
+
+function drawSail(x, yardLen, trim, palette) {
+  const w = yardLen * clamp(trim, 0.15, 1);
+  ctx.save();
+  ctx.translate(0, x);
+  ctx.strokeStyle = 'rgba(40,30,20,0.6)';
+  ctx.lineWidth = 0.25;
+  ctx.beginPath();
+  ctx.moveTo(-yardLen / 2, 0);
+  ctx.lineTo(yardLen / 2, 0);
+  ctx.stroke();
+
+  const grad = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);
+  grad.addColorStop(0, palette.sailShade);
+  grad.addColorStop(0.5, palette.sail);
+  grad.addColorStop(1, palette.sailShade);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.ellipse(0, 0.9, w / 2, 1.1, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(40,30,20,0.25)';
+  ctx.lineWidth = 0.15;
+  for (let i = -1; i <= 1; i++) {
+    ctx.beginPath();
+    ctx.moveTo((w / 2) * i * 0.6, 0.2);
+    ctx.lineTo((w / 2) * i * 0.6, 1.6);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawShip(ship, elapsed) {
+  const scale = ship.state === 'sinking' ? (ship.sinkScale ?? 1) : 1;
+  ctx.save();
+  ctx.translate(ship.x, ship.y);
+
+  // Health pip stays screen-aligned regardless of the ship's own facing
+  // or the camera's rotation, so cancel the camera's -player.heading here.
+  if (ship !== player && ship.state === 'active') {
+    ctx.save();
+    ctx.rotate(player.heading);
+    const pct = clamp(ship.health / ship.maxHealth, 0, 1);
+    ctx.fillStyle = 'rgba(13,27,42,0.7)';
+    ctx.fillRect(-5, -HULL_BOW - 4.5, 10, 2);
+    ctx.fillStyle = pct > 0.4 ? '#e0b060' : '#b6432f';
+    ctx.fillRect(-5, -HULL_BOW - 4.5, 10 * pct, 2);
+    ctx.restore();
+  }
+
+  ctx.rotate(ship.heading + (ship.state === 'sinking' ? ship.sinkTimer * 0.6 : 0));
+  ctx.scale(scale, scale);
+  ctx.globalAlpha = scale;
+  const p = ship.palette;
+
+  // hull (lower/darker waterline hull, then upper hull)
+  ctx.save();
+  ctx.scale(0.94, 0.94);
+  ctx.fillStyle = p.hullLow;
+  shipHullPath();
+  ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = p.hull;
+  shipHullPath();
+  ctx.fill();
+  ctx.strokeStyle = p.trim;
+  ctx.lineWidth = 0.6;
+  ctx.stroke();
+
+  // deck
+  ctx.fillStyle = p.deck;
+  ctx.fillRect(-HULL_HALF_W * 0.75, -HULL_BOW * 0.8, HULL_HALF_W * 1.5, (HULL_BOW + HULL_STERN) * 0.78);
+
+  // forecastle / aftcastle
+  ctx.fillStyle = p.deck;
+  ctx.fillRect(-2.4, -HULL_BOW * 0.85, 4.8, 2.6);
+  ctx.fillRect(-2.7, HULL_STERN * 0.35, 5.4, 3.2);
+
+  // gun ports
+  ctx.fillStyle = 'rgba(20,18,16,0.85)';
+  [-3.2, -0.4, 2.4].forEach((zz) => {
+    ctx.fillRect(-HULL_HALF_W - 0.6, zz - 0.5, 1.1, 1);
+    ctx.fillRect(HULL_HALF_W - 0.5, zz - 0.5, 1.1, 1);
+  });
+
+  // bowsprit
+  ctx.strokeStyle = '#4a3524';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(0, -HULL_BOW);
+  ctx.lineTo(0, -HULL_BOW - 3.2);
+  ctx.stroke();
+
+  // sails (foremast near bow, mainmast center-aft)
+  drawSail(-3.4, 6.2, ship.sailTrim ?? 0, p);
+  drawSail(1.4, 8, ship.sailTrim ?? 0, p);
+
+  // masts
+  ctx.fillStyle = '#3a2a1c';
+  [-3.4, 1.4].forEach((mz) => {
+    ctx.beginPath();
+    ctx.arc(0, mz, 0.55, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // flag
+  const wave = Math.sin(elapsed * 3 + ship.flagPhase) * 0.3;
+  ctx.save();
+  ctx.translate(0, HULL_STERN * 0.35 - 0.4);
+  ctx.rotate(wave);
+  ctx.fillStyle = p.flag;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(1.6, -0.5);
+  ctx.lineTo(0, -1);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawCannonball(ball) {
+  ctx.fillStyle = '#1c1c1c';
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, 0.6, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawParticle(p) {
+  const t = p.life / p.maxLife;
+  const r = p.r + (p.maxLife - p.life) * p.growth;
+  const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+  if (p.kind === 'splash') {
+    grad.addColorStop(0, `rgba(255,255,255,${0.85 * t})`);
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+  } else {
+    grad.addColorStop(0, `rgba(255,214,140,${0.9 * t})`);
+    grad.addColorStop(1, 'rgba(120,40,20,0)');
+  }
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// ---------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------
+let lastTime = performance.now();
+
+function animate(now) {
   requestAnimationFrame(animate);
-  const dt = Math.min(clock.getDelta(), 0.05);
-  const t = clock.elapsedTime;
-  oceanMat.uniforms.uTime.value = t;
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+  const elapsed = now / 1000;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, innerWidth, innerHeight);
 
   if (gameState === 'playing') {
-    let turnInput = 0;
-    let throttleInput = 0;
+    let turnInput = 0, throttleInput = 0;
     if (keys['ArrowLeft'] || keys['KeyA']) turnInput -= 1;
     if (keys['ArrowRight'] || keys['KeyD']) turnInput += 1;
     if (keys['ArrowUp'] || keys['KeyW']) throttleInput += 1;
     if (keys['ArrowDown'] || keys['KeyS']) throttleInput -= 1;
-    if (joystick.active) {
-      turnInput += joystick.dx;
-      throttleInput -= joystick.dy;
-    }
-    turnInput = THREE.MathUtils.clamp(turnInput, -1, 1);
-    throttleInput = THREE.MathUtils.clamp(throttleInput, -1, 1);
-    player.userData.heading += turnInput * dt * 0.9;
-    player.userData.throttle = THREE.MathUtils.clamp(player.userData.throttle + throttleInput * dt * 0.6, 0, 1);
+    if (joystick.active) { turnInput += joystick.dx; throttleInput -= joystick.dy; }
+    turnInput = clamp(turnInput, -1, 1);
+    throttleInput = clamp(throttleInput, -1, 1);
+    player.heading += turnInput * dt * TURN_RATE;
+    player.throttle = clamp(player.throttle + throttleInput * dt * 0.6, 0, 1);
 
-    updateShipPhysics(player, dt);
+    updateShipPhysics(player, dt, elapsed);
     for (const en of enemies) {
-      if (en.userData.state === 'active') {
-        updateEnemyAI(en, dt);
-        updateShipPhysics(en, dt);
-      } else if (en.userData.state === 'sinking') {
-        sinkShip(en, dt);
-      }
+      if (en.state === 'active') { updateEnemyAI(en, dt); updateShipPhysics(en, dt, elapsed); }
+      else if (en.state === 'sinking') sinkShip(en, dt);
     }
 
     for (let i = cannonballs.length - 1; i >= 0; i--) {
       const ball = cannonballs[i];
-      ball.userData.velocity.y -= 24 * dt;
-      ball.position.addScaledVector(ball.userData.velocity, dt);
-      ball.userData.life -= dt;
-      const seaLevel = waveHeight(ball.position.x, ball.position.z, t) * 0.5;
-      if (checkCannonballHits(ball, dt)) continue;
-      if (ball.position.y <= seaLevel || ball.userData.life <= 0) {
-        spawnSplash(ball.position.clone().setY(seaLevel));
-        scene.remove(ball);
-        cannonballs.splice(i, 1);
-      }
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+      ball.life -= dt;
+      if (checkCannonballHits(ball)) { cannonballs.splice(i, 1); continue; }
+      if (ball.life <= 0) { spawnSplash(ball.x, ball.y); cannonballs.splice(i, 1); }
     }
 
     for (let i = particles.length - 1; i >= 0; i--) {
-      const p = particles[i];
-      p.userData.life -= dt;
-      p.scale.addScalar(p.userData.grow * dt);
-      p.material.opacity = Math.max(0, p.userData.life * 2);
-      if (p.userData.life <= 0) { scene.remove(p); particles.splice(i, 1); }
+      particles[i].life -= dt;
+      if (particles[i].life <= 0) particles.splice(i, 1);
     }
-
     for (let i = messages.length - 1; i >= 0; i--) {
       messages[i].life -= dt;
       if (messages[i].life <= 0) messages.splice(i, 1);
     }
     renderLog();
 
-    // camera follow
-    const camOffset = new THREE.Vector3(
-      -Math.sin(player.userData.heading) * 28,
-      13,
-      -Math.cos(player.userData.heading) * 28
-    );
-    const desiredCamPos = player.position.clone().add(camOffset);
-    camera.position.lerp(desiredCamPos, 1 - Math.pow(0.001, dt));
-    camera.lookAt(player.position.clone().add(new THREE.Vector3(0, 3, 0)));
+    // ---- render world ----
+    ctx.save();
+    ctx.translate(innerWidth / 2, innerHeight / 2);
+    ctx.rotate(-player.heading);
+    ctx.scale(viewScale, viewScale);
+    ctx.translate(-player.x, -player.y);
 
-    // HUD
-    const pct = Math.max(0, player.userData.health / player.userData.maxHealth) * 100;
+    drawChartSea();
+    drawWake(player);
+    for (const en of enemies) drawWake(en);
+    for (const en of enemies) drawShip(en, elapsed);
+    drawShip(player, elapsed);
+    for (const ball of cannonballs) drawCannonball(ball);
+    for (const p of particles) drawParticle(p);
+
+    ctx.restore();
+
+    // ---- HUD ----
+    const pct = Math.max(0, player.health / player.maxHealth) * 100;
     healthFill.style.width = pct + '%';
     healthFill.style.background = pct > 40 ? 'var(--brass-bright)' : 'var(--danger)';
-    speedValue.textContent = Math.round(player.userData.speed * 1.9) + ' kn';
+    speedValue.textContent = Math.round(player.speed * 1.9) + ' kn';
     scoreValue.textContent = score;
-    windArrow.style.transform = `rotate(${(wind.angle * 180) / Math.PI}deg)`;
-    headingArrow.style.transform = `rotate(${(player.userData.heading * 180) / Math.PI}deg)`;
-    reloadLeftBar.style.width = (1 - player.userData.reload.left / 1.6) * 100 + '%';
-    reloadRightBar.style.width = (1 - player.userData.reload.right / 1.6) * 100 + '%';
+    windArrow.style.transform = `rotate(${((wind.angle - player.heading) * 180) / Math.PI}deg)`;
+    headingArrow.style.transform = `rotate(${(-player.heading * 180) / Math.PI}deg)`;
+    reloadLeftBar.style.width = (1 - player.reload.left / RELOAD_TIME) * 100 + '%';
+    reloadRightBar.style.width = (1 - player.reload.right / RELOAD_TIME) * 100 + '%';
 
     damageFlash = Math.max(0, damageFlash - dt * 2);
     damageVignette.style.opacity = damageFlash * 0.55;
   }
-
-  renderer.render(scene, camera);
 }
-
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
-renderer.setSize(innerWidth, innerHeight);
-camera.position.set(0, 13, -28);
-
-animate();
+requestAnimationFrame(animate);
